@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"flag"
 	"fmt"
-	"github.com/mdlayher/raw"
 	"github.com/miekg/pcap"
 	"io"
 	"log"
@@ -24,13 +22,14 @@ type Frame struct {
 	Data      []byte
 }
 
+const HeartbeatPort = 48689;
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
 	debug := flag.Bool("debug", false, "Print loads of debug info")
 	output_mkv := flag.Bool("mkv", true, "Spit out Audio + Video contained in MKV, else spit out raw MJPEG")
 	audio := flag.Bool("audio", true, "Output audio into MKV as well")
 	wakeup := flag.Bool("wakeups", true, "Send packets needed to start/keep the sender transmitting")
-	sendermac := flag.String("sender-mac", "000b78006001", "The macaddress of the sender unit")
+	senderip := flag.String("sender-ip", "192.168.168.55", "The IP address of the sender unit")
 	flag.Parse()
 
 	var videowriter *os.File
@@ -39,7 +38,7 @@ func main() {
 	videodis := make(chan []byte, 100)
 
 	if *wakeup {
-		go BroadcastWakeups(*interf, *sendermac)
+		go BroadcastWakeups(*interf, *senderip)
 	}
 
 	if *output_mkv {
@@ -138,10 +137,10 @@ func main() {
 		if CurrentPacket.LastChunk != 0 && CurrentPacket.LastChunk != CurrentChunk-1 {
 			if uint16(^(CurrentChunk << 15)) != 65534 {
 				log.Printf("Dropped packet because of desync detected (%d dropped so far, %d because of desync)",
-					droppedframes, desyncframes)
+				droppedframes, desyncframes)
 
 				log.Printf("You see; %d != %d-1",
-					CurrentPacket.LastChunk, CurrentChunk)
+				CurrentPacket.LastChunk, CurrentChunk)
 
 				// Oh dear, we are out of sync, Drop the frame
 				droppedframes++
@@ -231,34 +230,36 @@ func DumpChanToFile(channel chan []byte, file io.WriteCloser) {
 	log.Fatalf("Channel closed")
 }
 
-func BroadcastWakeups(ifname string, sendermac string) {
-	ifc, err := net.InterfaceByName(ifname)
-	if err != nil {
-		log.Fatalf("Unable get the interface name of %s, %s", ifname, err.Error())
+func BroadcastWakeups(ifname string, senderip string) {
+	packet := []byte{
+		0x54, 0x46, 0x36, 0x7a, 0x60, // Header
+		0x02, // Source (sender / receiver)
+		0x00, 0x00, // Padding
+		0x00, 0x00, // Heartbeat counter
+
+		0x00, 0x03, 0x03, 0x01, 0x00, 0x26, 0x00, 0x00, 0x00, // Sequence
+		0x00, 0x00, 0x00, 0x00, // Uptime
 	}
-
-	macbytes, err := hex.DecodeString(sendermac)
-
-	if err != nil {
-		log.Fatalf("Invalid MAC address string %s , %s", sendermac, err.Error())
-	}
-
-	packet := append([]byte{
-		0x0b, 0x00, 0x0b, 0x78, 0x00, 0x60, 0x02, 0x90, 0x2b, 0x34, 0x31, 0x02, 0x08, 0x00, 0x45, 0xfc,
-		0x02, 0x1c, 0x00, 0x0a, 0x00, 0x00, 0x40, 0x11, 0xa6, 0x0a, 0xc0, 0xa8, 0xa8, 0x38, 0xc0, 0xa8,
-		0xa8, 0x37, 0xbe, 0x31, 0xbe, 0x31, 0x02, 0x08, 0xd6, 0xdc, 0x54, 0x46, 0x36, 0x7a, 0x60, 0x02,
-		0x00, 0x00, 0x0a, 0x00, 0x00, 0x03, 0x03, 0x01, 0x00, 0x26, 0x00, 0x00, 0x00, 0x00, 0x02, 0xef,
-		0xdc}, make([]byte, 489)...)
-
-	packet = append(macbytes[:6], packet[6:]...)
 
 	for {
-		conn, err := raw.ListenPacket(ifc, raw.ProtocolARP)
+		saddr,err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", senderip, HeartbeatPort))
+		if err != nil {
+			log.Fatalf("Unable to resolve addr, %s", err.Error())
+		}
+		laddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("10.8.1.1:%d", HeartbeatPort))
+		if err != nil {
+			log.Fatalf("Unable to resolve addr, %s", err.Error())
+		}
+		conn, err := net.DialUDP("udp", laddr, saddr)
 		if err != nil {
 			log.Fatalf("Unable to keep broadcasting the keepalives, %s", err.Error())
 		}
-		conn.WriteTo(packet, &raw.Addr{HardwareAddr: macbytes})
+		_, err = conn.Write(packet)
+		if err != nil {
+			log.Fatalf("Unable to keep broadcasting the keepalives, %s", err.Error())
+		}
 		conn.Close()
 		time.Sleep(time.Second)
+		log.Println("Heartbeat sent")
 	}
 }
