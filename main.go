@@ -23,10 +23,11 @@ type Frame struct {
 }
 
 const HeartbeatPort = 48689;
+
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
 	debug := flag.Bool("debug", false, "Print loads of debug info")
-	output_mkv := flag.Bool("mkv", true, "Spit out Audio + Video contained in MKV, else spit out raw MJPEG")
+	output_mkv := flag.Bool("mkv", false, "Spit out Audio + Video contained in MKV, else spit out raw MJPEG")
 	audio := flag.Bool("audio", true, "Output audio into MKV as well")
 	wakeup := flag.Bool("wakeups", true, "Send packets needed to start/keep the sender transmitting")
 	senderip := flag.String("sender-ip", "192.168.168.55", "The IP address of the sender unit")
@@ -56,6 +57,7 @@ func main() {
 		go DumpChanToFile(videodis, videowriter)
 	} else {
 		videowriter = os.Stdout
+		go DumpChanToFile(videodis, videowriter)
 	}
 
 	MULTICAST_MAC := []byte{0x01, 0x00, 0x5e, 0x02, 0x02, 0x02}
