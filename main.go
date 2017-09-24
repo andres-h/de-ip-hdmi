@@ -248,7 +248,7 @@ func BroadcastWakeups(ifname string, senderip string) {
 		if err != nil {
 			log.Fatalf("Unable to resolve addr, %s", err.Error())
 		}
-		laddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("10.8.1.1:%d", HeartbeatPort))
+		laddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", HeartbeatPort))
 		if err != nil {
 			log.Fatalf("Unable to resolve addr, %s", err.Error())
 		}
