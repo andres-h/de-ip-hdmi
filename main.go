@@ -67,6 +67,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "de hdmi: %s\n", err)
 		return
 	}
+	err = h.SetFilter(fmt.Sprintf("host %s", *senderip))
+	if err != nil {
+		log.Fatalf("Unable to setup BPF")
+	}
 	defer h.Close()
 
 	droppedframes := 0
