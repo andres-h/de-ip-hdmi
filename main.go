@@ -9,11 +9,9 @@ import (
 	"github.com/miekg/pcap"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 type Frame struct {
@@ -21,8 +19,6 @@ type Frame struct {
 	LastChunk uint16
 	Data      []byte
 }
-
-const HeartbeatPort = 48689;
 
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
@@ -60,8 +56,6 @@ func main() {
 		go DumpChanToFile(videodis, videowriter)
 	}
 
-	MULTICAST_MAC := []byte{0x01, 0x00, 0x5e, 0x02, 0x02, 0x02}
-
 	h, err := pcap.OpenLive(*interf, 1500, true, 500)
 	if h == nil {
 		fmt.Fprintf(os.Stderr, "de hdmi: %s\n", err)
@@ -88,17 +82,6 @@ func main() {
 			continue
 		}
 
-		MACADDR := pkt.Data[0:6]
-		if bytes.Compare(MACADDR, MULTICAST_MAC) != 0 {
-			// This isnt the multicast packet we are looking for
-			continue
-		}
-
-		// Ethernet + IP + UDP = 50, Min packet size is 5 bytes, thus 55
-		if len(pkt.Data) < 100 {
-			continue
-		}
-
 		ApplicationData := pkt.Data[42:]
 
 		// Maybe there is some audio data?
@@ -109,6 +92,10 @@ func main() {
 			}
 
 			continue
+		}
+
+		if pkt.Data[34] == 0xbe && pkt.Data[35] == 0x31 {
+			ProcessHeartbeat(ApplicationData)
 		}
 
 		// Check that the port is 2068
@@ -236,36 +223,3 @@ func DumpChanToFile(channel chan []byte, file io.WriteCloser) {
 	log.Fatalf("Channel closed")
 }
 
-func BroadcastWakeups(ifname string, senderip string) {
-	packet := []byte{
-		0x54, 0x46, 0x36, 0x7a, 0x60, // Header
-		0x02, // Source (sender / receiver)
-		0x00, 0x00, // Padding
-		0x00, 0x00, // Heartbeat counter
-
-		0x00, 0x03, 0x03, 0x01, 0x00, 0x26, 0x00, 0x00, 0x00, // Sequence
-		0x00, 0x00, 0x00, 0x00, // Uptime
-	}
-
-	for {
-		saddr,err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", senderip, HeartbeatPort))
-		if err != nil {
-			log.Fatalf("Unable to resolve addr, %s", err.Error())
-		}
-		laddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", HeartbeatPort))
-		if err != nil {
-			log.Fatalf("Unable to resolve addr, %s", err.Error())
-		}
-		conn, err := net.DialUDP("udp", laddr, saddr)
-		if err != nil {
-			log.Fatalf("Unable to keep broadcasting the keepalives, %s", err.Error())
-		}
-		_, err = conn.Write(packet)
-		if err != nil {
-			log.Fatalf("Unable to keep broadcasting the keepalives, %s", err.Error())
-		}
-		conn.Close()
-		time.Sleep(time.Second)
-		log.Println("Heartbeat sent")
-	}
-}
