@@ -23,11 +23,12 @@ type Frame struct {
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
 	debug := flag.Bool("debug", false, "Print loads of debug info")
-	output_mkv := flag.Bool("mkv", false, "Spit out Audio + Video contained in MKV, else spit out raw MJPEG")
-	audio := flag.Bool("audio", true, "Output audio into MKV as well")
+	output := flag.String("output", "video", "Type of output")
+	audio := flag.Bool("audio", false, "Output audio into MKV as well")
 	wakeup := flag.Bool("wakeups", true, "Send packets needed to start/keep the sender transmitting")
 	senderip := flag.String("sender-ip", "192.168.168.55", "The IP address of the sender unit")
 	flag.Parse()
+
 
 	var videowriter *os.File
 	pipename := randString(5)
@@ -38,7 +39,7 @@ func main() {
 		go BroadcastWakeups(*interf, *senderip)
 	}
 
-	if *output_mkv {
+	if *output == "mkv" {
 		go WrapinMKV(fmt.Sprintf("/tmp/hdmi-Vfifo-%s", pipename), audiodis, *audio)
 
 		err := syscall.Mkfifo(fmt.Sprintf("/tmp/hdmi-Vfifo-%s", pipename), 0664)
@@ -51,9 +52,15 @@ func main() {
 			log.Fatalf("Could not open newly made fifo in /tmp/hdmi-Vfifo-%s, %s", pipename, err.Error())
 		}
 		go DumpChanToFile(videodis, videowriter)
-	} else {
+	} else if *output == "video" {
 		videowriter = os.Stdout
 		go DumpChanToFile(videodis, videowriter)
+	} else if *output == "audio" {
+		videowriter = os.Stdout
+		*audio = true
+		go DumpChanToFile(audiodis, videowriter)
+	} else {
+		log.Fatalf("Invalid output value, only video/audio/mkv allowed.")
 	}
 
 	h, err := pcap.OpenLive(*interf, 1500, true, 500)
@@ -85,7 +92,7 @@ func main() {
 		ApplicationData := pkt.Data[42:]
 
 		// Maybe there is some audio data?
-		if pkt.Data[34] == 0x08 && pkt.Data[35] == 0x12 && *output_mkv && *audio {
+		if pkt.Data[36] == 0x08 && pkt.Data[37] == 0x12 && *audio {
 			select {
 			case audiodis <- ApplicationData[16:]:
 			default:
@@ -94,12 +101,13 @@ func main() {
 			continue
 		}
 
-		if pkt.Data[34] == 0xbe && pkt.Data[35] == 0x31 {
+		if pkt.Data[36] == 0xbe && pkt.Data[37] == 0x31 {
 			ProcessHeartbeat(ApplicationData)
+			continue
 		}
 
 		// Check that the port is 2068
-		if pkt.Data[34] != 0x08 || pkt.Data[35] != 0x14 {
+		if pkt.Data[36] != 0x08 || pkt.Data[37] != 0x14 {
 			continue
 		}
 
