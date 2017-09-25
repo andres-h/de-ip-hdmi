@@ -20,12 +20,14 @@ type Frame struct {
 	Data      []byte
 }
 
+var TotalFrames = 0
+
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
 	debug := flag.Bool("debug", false, "Print loads of debug info")
 	output := flag.String("output", "video", "Type of output")
 	audio := flag.Bool("audio", false, "Output audio into MKV as well")
-	wakeup := flag.Bool("wakeups", true, "Send packets needed to start/keep the sender transmitting")
+	heartbeat := flag.Bool("heartbeat", true, "Send packets needed to start/keep the sender transmitting")
 	senderip := flag.String("sender-ip", "192.168.168.55", "The IP address of the sender unit")
 	flag.Parse()
 
@@ -35,8 +37,8 @@ func main() {
 	audiodis := make(chan []byte, 100)
 	videodis := make(chan []byte, 100)
 
-	if *wakeup {
-		go BroadcastWakeups(*interf, *senderip)
+	if *heartbeat {
+		go BroadcastHeartbeat(*interf, *senderip)
 	}
 
 	if *output == "mkv" {
@@ -76,7 +78,6 @@ func main() {
 
 	droppedframes := 0
 	desyncframes := 0
-	totalframes := 0
 
 	CurrentPacket := Frame{}
 	CurrentPacket.Data = make([]byte, 0)
@@ -167,7 +168,7 @@ func main() {
 			default:
 			}
 
-			totalframes++
+			TotalFrames++
 
 			if *debug {
 				log.Printf("Size: %d", len(CurrentPacket.Data))

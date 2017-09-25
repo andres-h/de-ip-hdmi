@@ -7,6 +7,7 @@ import (
 	"time"
 	"bytes"
 	"encoding/binary"
+	"os"
 )
 
 const HeartbeatPort = 48689;
@@ -25,7 +26,7 @@ type SenderHeartbeat struct {
 	ReceiverPresent uint8;
 }
 
-func BroadcastWakeups(ifname string, senderip string) {
+func BroadcastHeartbeat(ifname string, senderip string) {
 	packet := []byte{
 		0x54, 0x46, 0x36, 0x7a,
 		0x60, 0x02, // Source (sender / receiver) 0x6002 / 0x6301
@@ -59,15 +60,41 @@ func BroadcastWakeups(ifname string, senderip string) {
 	}
 }
 
+var EncodedWidth uint16 = 0
+var EncodedHeight uint16 = 0
+
+var LastFrame = 0
+var LastFrameTS time.Time
+
 func ProcessHeartbeat(data []byte) {
 	heartbeat := SenderHeartbeat{}
 	buffer := bytes.NewBuffer(data)
 	err := binary.Read(buffer, binary.BigEndian, &heartbeat)
 	if err == nil {
-		log.Printf("[signal present: %t] %dx%d@%.1f - %dx%d",
-		heartbeat.SignalPresent == 3,
-		heartbeat.SignalWidth, heartbeat.SignalHeight,
-		float32(heartbeat.SignalFPS)/10.0,
-		heartbeat.EncodedWidth, heartbeat.EncodedHeight)
+		// Calculate effective framerate
+		EncodedFramerate := 0
+		if LastFrame > 0 {
+			EncodedFramerate = (TotalFrames - LastFrame) * int(time.Now().Sub(LastFrameTS) / time.Millisecond)
+		}
+		LastFrame = TotalFrames
+		LastFrameTS = time.Now()
+
+		log.Printf("[signal present: %t] %dx%d@%.1f - %dx%d@%.1f",
+			heartbeat.SignalPresent == 3,
+			heartbeat.SignalWidth, heartbeat.SignalHeight,
+			float32(heartbeat.SignalFPS)/10.0,
+			heartbeat.EncodedWidth, heartbeat.EncodedHeight,
+			float32(EncodedFramerate)/1000.0)
+
+		if (EncodedWidth != 0 || EncodedHeight != 0) &&
+				(heartbeat.EncodedWidth != EncodedWidth || heartbeat.EncodedHeight != EncodedHeight) {
+			// FIXME dirty hack for gstreamer being unable to handle resolution
+			// changes
+			log.Println("Restarting due to format change")
+			os.Exit(1)
+		}
+
+		EncodedWidth = heartbeat.EncodedWidth
+		EncodedHeight = heartbeat.EncodedHeight
 	}
 }
