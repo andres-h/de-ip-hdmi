@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -11,7 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"syscall"
+	"strconv"
 )
 
 type Frame struct {
@@ -25,56 +24,47 @@ var TotalFrames = 0
 func main() {
 	interf := flag.String("interface", "eth0", "What interface the device is attached to")
 	debug := flag.Bool("debug", false, "Print loads of debug info")
-	output := flag.String("output", "video", "Type of output")
-	audio := flag.Bool("audio", false, "Output audio into MKV as well")
+	output := flag.String("output", "mkv", "Type of output")
+	audio := flag.Bool("audio", true, "Output audio into MKV as well")
+	ar := flag.Int("ar", 48000, "Audio sample rate")
+	delay := flag.Float64("delay", 0.5, "Video-audio delay in seconds")
 	heartbeat := flag.Bool("heartbeat", true, "Send packets needed to start/keep the sender transmitting")
+	processhb := flag.Bool("processhb", false, "Process heartbeats from sender")
 	senderip := flag.String("sender-ip", "192.168.168.55", "The IP address of the sender unit")
 	flag.Parse()
 
-
-	var videowriter *os.File
-	pipename := randString(5)
 	audiodis := make(chan []byte, 100)
 	videodis := make(chan []byte, 100)
 
-	if *heartbeat {
-		go BroadcastHeartbeat(*interf, *senderip)
+	if *ar != 44100 && *ar != 48000 {
+		log.Fatalf("Invalid audio sample rate, only 44100/48000 allowed.")
 	}
 
 	if *output == "mkv" {
-		go WrapinMKV(fmt.Sprintf("/tmp/hdmi-Vfifo-%s", pipename), audiodis, *audio)
-
-		err := syscall.Mkfifo(fmt.Sprintf("/tmp/hdmi-Vfifo-%s", pipename), 0664)
-		if err != nil {
-			log.Fatalf("Could not make a fifo in /tmp/hdmi-Vfifo-%s, %s", pipename, err.Error())
-		}
-
-		videowriter, err = os.OpenFile(fmt.Sprintf("/tmp/hdmi-Vfifo-%s", pipename), os.O_WRONLY, 0664)
-		if err != nil {
-			log.Fatalf("Could not open newly made fifo in /tmp/hdmi-Vfifo-%s, %s", pipename, err.Error())
-		}
-		go DumpChanToFile(videodis, videowriter)
+		go WrapinMKV(videodis, audiodis, *audio, *ar, *delay)
 	} else if *output == "video" {
-		videowriter = os.Stdout
-		go DumpChanToFile(videodis, videowriter)
+		*audio = false
+		go DumpChanToFile(videodis, os.Stdout)
 	} else if *output == "audio" {
-		videowriter = os.Stdout
 		*audio = true
-		go DumpChanToFile(audiodis, videowriter)
+		go DumpChanToFile(audiodis, os.Stdout)
 	} else {
 		log.Fatalf("Invalid output value, only video/audio/mkv allowed.")
 	}
 
 	h, err := pcap.OpenLive(*interf, 1500, true, 500)
 	if h == nil {
-		fmt.Fprintf(os.Stderr, "de hdmi: %s\n", err)
-		return
+		log.Fatalf("Unable to capture %s: %s", *interf, err.Error())
 	}
 	err = h.SetFilter(fmt.Sprintf("host %s", *senderip))
 	if err != nil {
-		log.Fatalf("Unable to setup BPF")
+		log.Fatalf("Unable to setup BPF: %s", err.Error())
 	}
 	defer h.Close()
+
+	if *heartbeat {
+		go BroadcastHeartbeat(*senderip)
+	}
 
 	droppedframes := 0
 	desyncframes := 0
@@ -103,7 +93,9 @@ func main() {
 		}
 
 		if pkt.Data[36] == 0xbe && pkt.Data[37] == 0x31 {
-			ProcessHeartbeat(ApplicationData)
+			if *processhb {
+				ProcessHeartbeat(ApplicationData)
+			}
 			continue
 		}
 
@@ -139,10 +131,10 @@ func main() {
 		if CurrentPacket.LastChunk != 0 && CurrentPacket.LastChunk != CurrentChunk-1 {
 			if uint16(^(CurrentChunk << 15)) != 65534 {
 				log.Printf("Dropped packet because of desync detected (%d dropped so far, %d because of desync)",
-				droppedframes, desyncframes)
+					droppedframes, desyncframes)
 
 				log.Printf("You see; %d != %d-1",
-				CurrentPacket.LastChunk, CurrentChunk)
+					CurrentPacket.LastChunk, CurrentChunk)
 
 				// Oh dear, we are out of sync, Drop the frame
 				droppedframes++
@@ -183,34 +175,43 @@ func main() {
 	}
 }
 
-func randString(n int) string {
-	const alphanum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	var bytes = make([]byte, n)
-	rand.Read(bytes)
-	for i, b := range bytes {
-		bytes[i] = alphanum[b%byte(len(alphanum))]
-	}
-	return string(bytes)
-}
-
-func WrapinMKV(uuidpath string, audioin chan []byte, audio bool) {
+func WrapinMKV(videoin chan []byte, audioin chan []byte, audio bool, ar int, delay float64) {
 	var ffmpeg *exec.Cmd
+
 	if audio {
-		ffmpeg = exec.Command("ffmpeg", "-f", "mjpeg", "-i", uuidpath, "-f", "s32be", "-ac", "2", "-ar", "44100", "-i", "pipe:0", "-f", "matroska", "-codec", "copy", "pipe:1")
+		ffmpeg = exec.Command("ffmpeg", "-nostdin", "-f", "mjpeg", "-i", "pipe:3", "-f", "s32be", "-ac", "2", "-ar", strconv.Itoa(ar), "-itsoffset", strconv.FormatFloat(delay, 'f', -1, 64), "-i", "pipe:0", "-f", "matroska", "-codec", "copy", "pipe:1")
 	} else {
-		ffmpeg = exec.Command("ffmpeg", "-f", "mjpeg", "-i", uuidpath, "-f", "matroska", "-codec", "copy", "pipe:1")
+		ffmpeg = exec.Command("ffmpeg", "-nostdin", "-f", "mjpeg", "-i", "pipe:3", "-f", "matroska", "-codec", "copy", "pipe:1")
 	}
+
 	ffmpegstdout, err := ffmpeg.StdoutPipe()
 	if err != nil {
 		log.Fatalf("Unable to setup pipes for ffmpeg (stdout)")
 	}
-	ffmpeg.Stderr = os.Stderr
 
 	audiofile, err := ffmpeg.StdinPipe()
+	if err != nil {
+		log.Fatalf("Unable to setup pipes for ffmpeg (stdin)")
+	}
+
+	pipe3r, videofile, err := os.Pipe()
+	if err != nil {
+		log.Fatalf("Unable to setup pipes for ffmpeg (video)")
+	}
+
+	ffmpeg.Stderr = os.Stderr
+	ffmpeg.ExtraFiles = []*os.File{pipe3r}
 
 	go DumpChanToFile(audioin, audiofile)
+	go DumpChanToFile(videoin, videofile)
 
-	ffmpeg.Start()
+	if err := ffmpeg.Start(); err != nil {
+		log.Fatalf("Unable to start ffmpeg: %s", err.Error())
+	}
+
+	if err := pipe3r.Close(); err != nil {
+		log.Fatal("Unable to close read end of pipe")
+	}
 
 	for {
 		_, err := io.Copy(os.Stdout, ffmpegstdout)
@@ -231,4 +232,3 @@ func DumpChanToFile(channel chan []byte, file io.WriteCloser) {
 
 	log.Fatalf("Channel closed")
 }
-
